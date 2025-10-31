@@ -1,0 +1,16 @@
+name: gee_modis_downloader
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pandas
+  - geopandas
+  - rasterio
+  - matplotlib
+  - requests
+  - pip:
+    - earthengine-api
+    - questionary
+    - tqdm
