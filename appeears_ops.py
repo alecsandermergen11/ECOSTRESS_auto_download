@@ -57,6 +57,10 @@ ECOSTRESS_PRODUCTS = {
         'id': 'ECO_L3T_SM.002', # <--- ID V002 CORRIGIDO
         'layers': ['SM'] # Camada 'ETdaily' não existe mais, 'ETinst' é a substituta
     },
+    'ECOSTRESS_Rg_Instantaneous_70m (ECO_L3T_SEB.002)': {
+        'id': 'ECO_L3T_SEB.002', # <--- ID V002 CORRIGIDO
+        'layers': ['Rg'] # Camada 'ETdaily' não existe mais, 'ETinst' é a substituta
+    },
 }
 
 def api_login():
@@ -174,12 +178,17 @@ def check_task_status(task_id, token):
              return {"status": "failed", "message": "Tarefa não encontrada (pode ter falhado ou expirado)"}
         return None
 
-def download_files(task_id, aoi_name, token):
+def download_files(task, token):
     """
     Baixa todos os arquivos .tif de uma tarefa concluída.
+    'task' é um dicionário: {'id': '...', 'aoi_name': '...', 'period': '...'}
     """
     
-    # --- ETAPA 1: Obter a lista de arquivos (bundle) da API ---
+    # --- ETAPA 1: Obter informações da tarefa ---
+    task_id = task['id']
+    aoi_name = task['aoi_name']
+    period_folder_name = task['period'] # Ex: '2020-01-01_to_2020-06-30'
+    
     bundle_url = API_URL + "bundle/" + task_id
     headers = {'Authorization': f'Bearer {token}'}
     
@@ -187,7 +196,7 @@ def download_files(task_id, aoi_name, token):
         tqdm.write(f"Buscando lista de arquivos (bundle) para {task_id}...")
         response = requests.get(bundle_url, headers=headers)
         response.raise_for_status()
-        task_data = response.json() # Este JSON agora contém a chave 'files'
+        task_data = response.json() 
     except Exception as e:
         tqdm.write(f"❌ ERRO ao obter lista de arquivos (bundle) para tarefa {task_id}: {e}")
         return
@@ -197,7 +206,6 @@ def download_files(task_id, aoi_name, token):
         tqdm.write("Nenhum arquivo encontrado no bundle da tarefa.")
         return
 
-    # Filtra para baixar APENAS os arquivos .tif (baseado na sua imagem)
     files_to_download = [f for f in task_data['files'] if f['file_name'].endswith('.tif')]
     
     if not files_to_download:
@@ -206,42 +214,55 @@ def download_files(task_id, aoi_name, token):
 
     tqdm.write(f"Encontrados {len(files_to_download)} arquivos .tif para baixar...")
 
-    # Cria uma pasta para este lote de datas (ex: 2018-07_to_2018-12)
-    # Pega o período do nome da tarefa (ex: ECOSTRESS_buffer-ATTO..._2018-07-01_to_2018-12-31)
-    period_str = task_data.get('task_name', task_id).split('_')[-3:] # ['2018-07-01', 'to', '2018-12-31']
-    period_folder_name = "_".join(period_str)
-    
-    output_dir = os.path.join(RAW_TIF_DIR, aoi_name, "ECOSTRESS_AppEEARS", period_folder_name)
-    os.makedirs(output_dir, exist_ok=True)
+    # Cria a pasta de saída legível, ex: .../ECOSTRESS_AppEEARS/2020-01-01_to_2020-06-30
+    output_dir_base = os.path.join(RAW_TIF_DIR, aoi_name, "ECOSTRESS_AppEEARS", period_folder_name)
+    os.makedirs(output_dir_base, exist_ok=True)
     
     # --- ETAPA 3: Baixar cada .tif individualmente ---
     for file_info in tqdm(files_to_download, desc=f"Baixando TIFs ({period_folder_name})", leave=False):
+        
+        file_name = file_info['file_name'] # Ex: "PASTA/ARQUIVO.tif"
         file_id = file_info['file_id']
-        file_name = file_info['file_name']
         
-        tif_path = os.path.join(output_dir, file_name)
+        # --- INÍCIO DA CORREÇÃO PRINCIPAL ---
         
+        # 1. Normalizar barras (para funcionar no Windows)
+        # Transforma "PASTA/ARQUIVO.tif" em "PASTA\ARQUIVO.tif"
+        relative_file_path = file_name.replace('/', os.path.sep)
+        
+        # 2. Criar o caminho de salvamento completo
+        # ...\ECOSTRESS_AppEEARS\2020-01-01_to...\PASTA\ARQUIVO.tif
+        tif_path = os.path.join(output_dir_base, relative_file_path)
+        
+        # 3. Obter o diretório-pai deste arquivo
+        # ...\ECOSTRESS_AppEEARS\2020-01-01_to...\PASTA
+        tif_dir = os.path.dirname(tif_path)
+        
+        # 4. Criar este diretório-pai (aqui está a mágica!)
+        os.makedirs(tif_dir, exist_ok=True)
+        
+        # --- FIM DA CORREÇÃO PRINCIPAL ---
+
         if os.path.exists(tif_path):
              tqdm.write(f"[OK] Já existe: {file_name}")
              continue
         
-        # O download_url é o mesmo, mas com o file_id do TIF
         download_url = API_URL + "bundle/" + task_id + "/" + file_id
         try:
             response = requests.get(download_url, headers=headers, stream=True)
             response.raise_for_status()
             
-            # Barra de progresso para o download do arquivo
             total_size = int(response.headers.get('content-length', 0))
             block_size = 1024 * 1024 # Chunks de 1MB
-            progress_bar = tqdm(total=total_size, unit='B', unit_scale=True, desc=file_name[:20], leave=False)
+            progress_bar = tqdm(total=total_size, unit='B', unit_scale=True, desc=file_name.split(os.path.sep)[-1][:20], leave=False)
 
             with open(tif_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=block_size):
                     progress_bar.update(len(chunk))
                     f.write(chunk)
             progress_bar.close()
-            tqdm.write(f"✅ Baixado: {file_name}")
+            # tqdm.write(f"✅ Baixado: {file_name}") # Opcional, pode poluir o log
 
         except Exception as e:
+            # Mostra o erro real (ex: [Errno 2])
             tqdm.write(f"❌ ERRO ao baixar {file_name}: {e}")
